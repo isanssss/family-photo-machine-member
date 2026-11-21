@@ -17,6 +17,25 @@ function readPart(name: string): string {
   return readFileSync(join(here, name), "utf8").replace(/\s+/g, "");
 }
 
+// Walk the JPEG marker segments to the start-of-frame and read the
+// picture's dimensions, so an oversized image fails here instead of
+// at the gate (the rules cap the entry at 1024x1024).
+function jpegDimensions(bytes: Buffer): { width: number; height: number } {
+  let offset = 2; // past the SOI marker checked by the caller
+  while (offset + 9 < bytes.length) {
+    if (bytes[offset] !== 0xff) throw new Error("lost JPEG marker sync");
+    const marker = bytes[offset + 1];
+    if (marker === 0xc0 || marker === 0xc2) {
+      return {
+        height: bytes.readUInt16BE(offset + 5),
+        width: bytes.readUInt16BE(offset + 7),
+      };
+    }
+    offset += 2 + bytes.readUInt16BE(offset + 2);
+  }
+  throw new Error("no start-of-frame marker found");
+}
+
 function main(): void {
   const encoded = PARTS.map(readPart).join("");
   const bytes = Buffer.from(encoded, "base64");
@@ -29,6 +48,10 @@ function main(): void {
   }
   if (bytes[bytes.length - 2] !== 0xff || bytes[bytes.length - 1] !== 0xd9) {
     throw new Error("decoded bytes do not end with the JPEG marker");
+  }
+  const { width, height } = jpegDimensions(bytes);
+  if (width > 1024 || height > 1024) {
+    throw new Error(`image is ${width}x${height}, over the 1024x1024 cap`);
   }
   mkdirSync("/output", { recursive: true });
   writeFileSync("/output/entry.png", bytes);
